@@ -1,4 +1,4 @@
-DBIx/Record version 0.09
+DBIx/Record version 0.10
 ========================
 
 NAME
@@ -211,6 +211,7 @@ DBIx::Record
     die_errors_plain
     crunch
     htmlesc
+    nullfix
     hascontent
     as_arr
     MEDIA_TEXT
@@ -537,7 +538,7 @@ DBIx::Record
     uppercase, everything else is lowwer case. In void context, modifies the
     input param itself. Otherwise crunches and returns the modified value.
 
-  static crunch()
+  static htmlesc()
 
     Escapes the given string for display in a web page. In void context,
     modifies the input param itself. Otherwise crunches and returns the

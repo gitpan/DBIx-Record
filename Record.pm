@@ -9,7 +9,7 @@ use vars qw[@ISA @errors @EXPORT_OK %EXPORT_TAGS $VERSION];
 @ISA = 'Exporter';
 
 # version
-$VERSION = '0.09';
+$VERSION = '0.10';
 
 
 
@@ -315,6 +315,8 @@ C<DBIx::Record> exports the following methods and constants if you load it with 
 =item crunch
 
 =item htmlesc
+
+=item nullfix
 
 =item hascontent
 
@@ -769,7 +771,7 @@ sub set_fields {
 	
 	# store fields
 	while (my($k, $v) = each(%fields)) {
-		my ($field, $def);
+		my ($field, $def, $default);
 		$k = lc($k);
 		
 		# if we don't have a field definition, fatal error
@@ -778,6 +780,9 @@ sub set_fields {
 		
 		# add field name
 		$def->{'field_name'} = $k;
+
+		# get default value
+		$default = delete $def->{'default'};
 		
 		# instantiate the field
 		$field = $def->{'class'}->new($def, $self->{'login'});
@@ -785,8 +790,14 @@ sub set_fields {
 		# set from interface if option indicates so
 		if ( $opts{'set_from_interface'} && ($def->{'new_only'} ? $isnew : 1) )
 			{$field->set_from_interface($v)}
-		else
-			{$field->set_from_db($v)}
+		else {
+			if ($isnew) {
+				if (defined $default)
+					{$field->set_from_db($default)}
+			}
+			else
+				{$field->set_from_db($v)}
+		}
 		
 		# reference media object if it exists
 		if ($opts{'media_object'})
@@ -985,7 +996,8 @@ Handy for debugging.  Outputs C<@DBIx::Record::errors> to STDOUT.
 =cut
 
 sub show_errors_plain {
-	print join("\n", @errors), "\n";
+	foreach my $err (@errors)
+		{print $err->output(MEDIA_TEXT), "\n"}
 }
 # 
 # show_errors_plain
@@ -1003,6 +1015,8 @@ Handy for debugging.  Outputs C<@DBIx::Record::errors> to STDOUT, then dies.
 =cut
 
 sub die_errors_plain {
+	if (defined $_[0])
+		{print $_[0], "\n"}
 	show_errors_plain();
 	exit;
 }
@@ -1636,7 +1650,7 @@ sub as_arr {
 
 
 
-=head2 X<DBIx::Record.crunch>static crunch()
+=head2 X<DBIx::Record.crunch>static htmlesc()
 
 Escapes the given string for display in a web page. In void context, modifies the input param itself.  Otherwise
 crunches and returns the modified value.
@@ -1660,7 +1674,6 @@ sub htmlesc {
 	
 	wantarray ? @$array : $array->[0];
 }
-
 
 =head2 X<DBIx::Record.crunch>static hascontent()
 
@@ -2819,10 +2832,11 @@ login object used to communicate with the database.
 
 sub new {
 	my ($class, $def, $login) = @_;
-	my ($self);
+	my ($self, $default);
 	
-	# remove certain properties of definition
+	# remove class property
 	delete $def->{'class'};
+	$default = delete $def->{'default'};
 	
 	# field aliases
 	if (defined $def->{'desc_long'})
@@ -2836,7 +2850,7 @@ sub new {
 	
 	# hold on to login object
 	$self->{'login'} = $login;
-	
+
 	# return
 	return $self;
 }
@@ -3298,7 +3312,10 @@ sub validate {
 		$max =~ s|\s*k\s*$||si and $max *= 1024;
 		$max =~ s|\s*m\s*$||si and $max *= (1024 * 1024);
 		
-		if (length($self->{'value'}) > $max) {
+		if (
+			(defined $self->{'value'}) && 
+			(length($self->{'value'}) > $max)
+			) {
 				$rv = DBIx::Record::Error->add (
 					text => $self->{'desc_short'} . " may be no longer than $self->{'max_size'} characters",
 					html => $self->desc_short_html . " may be no longer than $self->{'max_size'} characters",
@@ -3713,6 +3730,7 @@ sub text_display {
 # 
 sub send_to_db {
 	my ($self) = @_;
+
 	return $self->{'output_db'}->{$self->{'value'}};
 }
 # 

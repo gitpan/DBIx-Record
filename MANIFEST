@@ -3,5 +3,3 @@ Makefile.PL
 MANIFEST
 README
 test.pl
-lib/Format/ODBC/MSAccess.pm
-lib/Format/MySql.pm
