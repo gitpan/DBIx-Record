@@ -1,0 +1,1291 @@
+DBIx/Record version 0.09
+========================
+
+NAME
+    DBIx::Record - Middle tier system for representing database records as
+    objects.
+
+SYNOPSIS
+     use Hospital;  # load class that implements DBIx::Record class
+     my ($login, $patient);
+ 
+     # get object that holds the database connection
+     $login = Hospital->get_login;
+ 
+     # Instantiate object representing the patient record
+     # that has primary key 1000.  Change the record's name_last field.
+     # Then save the record.
+     $patient = Hospital::Patient->new($login, 1000, fields=>['name_last']);
+     $patient->{'f'}->{'name_last'} = 'Smith';
+     $patient->save;
+ 
+     # Instantiate object representing a patient record
+     # that doesn't exist yet.  Set the name_last field, save, 
+     # and output the primary key of the new record
+     $patient = Hospital::Patient->new($login, -1);
+     $patient->{'f'}->{'name_last'} = 'Smith';
+     $patient->save;
+     print 'primary key: ', $patient->{'pk'}, "\n";
+
+INSTALLATION
+    DBIx::Record can be installed with the usual routine:
+
+            perl Makefile.PL
+            make
+            make test
+            make install
+
+OVERVIEW
+    "DBIx::Record" is a system for representing database records as objects.
+    Each table in a database can be considered a class, and each record an
+    instantiation of that class. By presenting records as objects, each type
+    of record can have its own custom properties and methods. "DBIx::Record"
+    is an abstract class: it must be overridden by a concrete class to be
+    implemented.
+
+    A "DBIx::Record" record object (more simply known as a "record object")
+    is instantiated with the "new" static method, which accepts two
+    arguments: a DBIx::Record::Login object (which holds the connection to
+    the database) and one of several objects that provides the data for a
+    specific record. ("new" is explained in more detail below.) For example,
+    consider a database of medical patients. Each patient has a record in a
+    "Patients" table, and can be represented by an object of the class
+    "Hospital::Patient". The following code creates a record object with a
+    primary key of 1000:
+
+     my $patient = Hospital::Patient->new($login, 1000);
+
+    The new object, then, represents the patient record whose primary key is
+    1000. The primary key is stored in the "pk" property of the object:
+
+     print 'primary key: ', $patient->{'pk'}, "\n";
+
+    When the record object is instantiated using an ID, no calls to the
+    database are made. That is, the object merely knows its primary key. No
+    data has been retrieved from the database, and in fact, it has not even
+    been confirmed that the record exists. To pull the record's data from
+    the database, use the "set_fields" method:
+
+     $patient>set_fields();
+
+    "set_fields" retrieves the record fields from the database and stores
+    them in the object's "f" ("fields") property. That data can then be
+    written to and read, and the record saved:
+
+     $patient->{'f'}->{'name_last'} = 'Smith';
+     print 'last name: ', $patient->{'f'}->{'name_last'}, "\n";
+     $patient->save;
+
+    There are other ways to instantiate an object besides using an existing
+    record's primary key. For example, to create a new record (i.e. to add a
+    new record to the database, send a negative primary key. "DBIx::Record"
+    will understand that to mean a new record. You can put values in the
+    record's "f" hash and save the record as usual:
+
+     my $patient = Hospital::Patient->new($login, -1);
+     $patient->{'f'}->{'name_last'} = 'Smith';
+     $patient->save;
+     print 'primary key: ', $patient->{'pk'}, "\n";
+
+    Another way to instantiate a record object is to pass a DBI statement
+    handle as the second argument. "DBIx::Record" will understand to
+    populate the object's "f" hash from the next record in the statement
+    handle:
+
+     my $patient = Hospital::Patient->new($login, $sth);
+     print 'primary key: ', $patient->{'pk'}, "\n";
+
+    Yet another way to instantiate a "DBIx::Record" object is to pass a CGI
+    query object as the second argument. In that situation you must always
+    pass a specific list of fields that should be read from the query.
+    "DBIx::Record" will read the listed fields from the query and store them
+    in the "f" hash:
+
+     my $patient = Hospital::Patient->new($login, $q, fields=>['name_last', 'name_first', 'date_of_birth']);
+     $patient->save;
+
+    The techniques described here provide the basis for how "DBIx::Record"
+    objects work. There are many more features. Just to name a few,
+    "DBIx::Records" provide:
+
+    * Centralized enforcement of business rules for database records
+    * Encapsulation of common database routines
+    * Centralized system for defining how records should be displayed in
+    text output, web pages, and web page forms
+    * Cross-platform generization
+  Assumptions and Restrictions
+
+    "DBIx::Record" is based on certain assumptions about how you design your
+    database. While most of the assumed practices are quite typical, it's
+    necessary to be sure that "DBIx::Record" and your database design do not
+    clash.
+
+    Tables that are represented by record object classes are assumed to have
+    a single primary key. It is assumed that that key will never be a
+    negative integer. It is also assumed that a new primary key can be
+    programmatically generated for each new record (typically through use of
+    a sequence). "DBIx::Record" does not (currently) support referencing
+    tables with composite primary keys, but it does not prevent you for
+    including those types of tables in your database and referencing them in
+    a more traditional manner.
+
+    "DBIx::Record" assumes that no database or HTML form fields start with
+    the "dbr.". "DBIx::Record" reserves that prefix for use as hidden fields
+    in HTML forms. It is also assumed that field names are case-insensitive.
+
+  Implementation: The Four Layers of DBIx::Record
+
+    "DBIx::Record" is implemented by extending the base class through
+    several layers that implement different pieces of the database
+    connection puzzle. A typical implementation will extend "DBIx::Record"
+    through four layers. The following sections look at each layer.
+
+  Base: DBIx::Record
+
+    The base class is "DBIx::Record" itself. "DBIx::Record" provides the
+    overall interface as well as a variety of utility functions.
+    "DBIx::Record" is an abstract class and defines several methods that
+    *must* be overridden. This class also implements a wide range of
+    concrete methods that can be used by the final concrete classes.
+
+  Database Format: DBIx::Record::DBFormat::*database format*
+
+    The next layer, DBIx::Record::DBFormat::*format*, extends "DBIx::Record"
+    to handle a specific database format such as MySQL, PosGreSql, Oracle,
+    etc. This layer implements six static methods that provide generic
+    access to a relational database:
+
+    * select_single($dbh, $pk, %opts): returns the fields of a single record
+    * select_multiple($dbh, $sth, %opts): returns a DBI statement handle for
+    a set of records
+    * record_exists($dbh, $pk): returns true if a specified record exists
+    * record_delete($dbh, $tablename, $pk): deletes a specified record
+    * update($dbh, $tablename, $pk, %fields): saves a set of fields to a
+    specified record
+    * insert($dbh, $tablename, $pk, %fields): saves a new record and returns
+    the primary key
+  *Application*
+
+    The Application layer extends one of the database format classes to
+    provide methods that apply to your specific application. This class
+    provides the "create_login" method that provides a login object and a
+    database handle.
+
+  Table: *Application*::*Table*
+
+    This concrete class layer extends the application layer to provide
+    objects for a specific table. This class implements the "table_name",
+    "pk_field_name", and "field_defs" methods.
+
+DBIx::Record
+    "DBIx::Record" is the base class for record objects. One class is
+    defined for each table in the database. Every instantiation of
+    "DBIx::Record" represents a single record in that table.
+
+  Constants
+
+    "DBIx::Record" has three constants for indicating the media for the
+    field object. These constants are all integers, so you can use "==" for
+    comparisons.
+
+    MEDIA_TEXT
+        output the field as plain text
+
+    MEDIA_HTML
+        output the field for use in an HTML web page.
+
+    MEDIA_HTML_FORM
+        output the field as an HTML web page form.
+
+  import/export
+
+    "DBIx::Record" exports the following methods and constants if you load
+    it with the ":all" option, like this:
+
+     use DBIx::Record ':all';
+
+    reset_errors
+    add_error
+    add_dbierror
+    show_errors_plain
+    die_errors_plain
+    crunch
+    htmlesc
+    hascontent
+    as_arr
+    MEDIA_TEXT
+    MEDIA_HTML
+    MEDIA_HTML_FORM
+  %nospace
+
+    "%DBIx::Record::nospace" is used by "strip_html". "%nospace" gives a set
+    of HTML tags which, when removed, should *not* be replaced with a single
+    space. Each key in "%nospace" is the name of a tag, in lowercase. The
+    values are ignored.
+
+  static @errors
+
+    An array of error messages that are created when a function has an
+    error. Any function may add errors to this array, but only the following
+    functions may clear the array:
+
+    * "save",
+    * "validate",
+    * "get_records"
+    * "set_fields"
+  login
+
+    "login" represents the record's connection to the database. "login" is
+    used by every method that sends data to or retrieves data from the
+    database.
+
+    "login" may either be an object which returns a DBI database handle via
+    its "get_dbh" method, or "login" may itself be a database handle.
+    "DBIx::Record" dynamically determines which type of object it is and
+    acts accordingly. The application layer creates the login object using
+    its static "create_login" method.
+
+  "pk"
+
+    The primary key of the record. This property should never be set outside
+    of the class.
+
+  is_own_login
+
+    If true, then the object uses itself as its own login object. This
+    property is used by the "get_login method".
+
+  "f"
+
+    The hash of field objects. The keys are the field names, the values are
+    field objects. It's named "f" instead of fields because I found myself
+    using this property dozens of times per web page, and I wanted something
+    shorter to type.
+
+    "f" is reference to a tied hash. If you assign a value to one of the
+    hash keys, the value is assigned using that field object's
+    "set_from_interface" method. Also, the tied object tracks if any changes
+    to the fields have been made, so that no database call is necessary if
+    no changes were made.
+
+  static new($login, $id, %options)
+
+    This static method is the constructor for a "DBIx::Record" object. The
+    method has two required arguments. The first, "$login", is the login
+    object. It may instead be a dbh object.
+
+    The second, "$id" is one of these types of scalars:
+
+    * a primary key: if "$id" is a defined non-reference, and if it is an
+    integer greater than or equal to zero, then it is assumed to be the
+    primary key of an existing record.
+    * undef or negative number: if "$id" is not defined, or if it is a
+    number less than zero, then it is assumed that the record object
+    represents a new record. In this case the "pk" property is not defined.
+    * a statement handle: if "$id" is a DBI statement handle, then the
+    current record in the handle will be used to set the fields of the
+    record object. In doing so, the statement handle will be advanced to the
+    next record. The statement handle *must* include the primary key of the
+    record. If the statement handle is at eof, then "new" returns undef.
+    * CGI object: if a CGI object is passed as the second argument, if the
+    "dbr.form_sent" field in the query is true, and if the "dbr.cancel"
+    field in the query is false, then the fields are set from the CGI
+    object. The feature is only enabled if the "fields" option is also sent.
+    Only the fields listed in "fields" are loaded from the CGI. "fields" may
+    be set to "*" to indicate all fields.
+  Options
+
+  set_fields, fields
+
+    This option consists of an array of fields to retrieve from the
+    database. If this option is sent, then the new record object
+    automatically retrieve. If the list consists of just "*", then all the
+    fields are retrieved. The options "set_fields" and "fields" mean exactly
+    the same thing.
+
+  set_fields(%options)
+
+    This method retrieves data from the database using the primary key of
+    the record object, and stores the data into the "fields" hash. There are
+    no required arguments. By default, "set_fields" retrieves all the fields
+    in the record. This function uses "select_single(%opts)", which is
+    implemented in the database format layer, to do the actual retrieval of
+    records from the database. An array of errors is returned if "pk" is not
+    defined or if the record is not found in the database.
+
+  Options
+
+  fields
+
+    "fields" is an array of the names of fields to retrieve. It may also be
+    a scalar, which will be interpreted as a single-item array. So, for
+    example, this code retrieves the "name" and "email" fields:
+
+     $client->set_fields(fields=>['name', 'email']);
+
+  hash
+
+    TODO
+
+  set_from_interface
+
+    TODO
+
+  media_object
+
+    TODO
+
+  static new_record_pk($pk)
+
+    Returns true if the given primary key is in the format of a new record.
+
+  fields_object()
+
+    Returns the object to which the fields hash is tied.
+
+  show_fields()
+
+    A handy utility for debugging. Displays all fields in a web page
+
+  show_field_names()
+
+    Another handy utility for debugging. Displays all field names.
+
+  static reset_errors()
+
+    Clears out all errors from "@DBIx::Record::errors".
+
+  static add_error()
+
+    Adds an error to "@DBIx::Record::errors". Always returns an empty array,
+    so returning the return value of this function is a clean way to return
+    false from a subroutine.
+
+  static add_dbierror()
+
+    Adds the value of "$DBI::errstr" to "@DBIx::Record::errors". Always
+    returns an empty array, so returning the return value of this function
+    is a clean way to return false from a subroutine.
+
+  static show_errors_plain()
+
+    Handy for debugging. Outputs "@DBIx::Record::errors" to STDOUT.
+
+  static die_errors_plain()
+
+    Handy for debugging. Outputs "@DBIx::Record::errors" to STDOUT, then
+    dies.
+
+  static get_ob_dbh($ob)
+
+    Returns the database handle from a login, if "$ob" *is* login object.
+    Otherwise returns "$ob" itself.
+
+  get_dbh()
+
+    Returns the database handle used by the record obejct.
+
+  is_new()
+
+    Returns true if the record is a new record (i.e. not saved to the
+    database yet).
+
+  save()
+
+    This method saves the record to the database, returning an array of
+    errors if the record could not be saved.
+
+    First, "save" calls "validate". If "validate" returns any errors then
+    "save" returns those errors to the caller and is done.
+
+    If "pk" is defined, then "save" calls update, returning its error array.
+    Otherwise "save" calls insert, setting the resulting new primary key to
+    "pk" (if there were no errors) and returning the array of errors.
+
+  exists()
+
+    Returns true if the given record exists in the database. Calls
+    record_exists to make the check.
+
+  delete()
+
+    Deletes the record. Returns true if successful. Before the record is
+    deleted, the "before_delete" method is called. If that method returns
+    false, then the record is not deleted. After the deletion, the
+    <after_delete> method is called.
+
+  static get_records($login, %options)
+
+    This static method returns a "DBIx::Record::Looper" object representing
+    the results of a select statement.
+
+    By default, every field in every record is returned. For example, this
+    code loops through the entire Clients table:
+
+     $looper = MyApp::Client->get_records();
+ 
+     while (my $client = $looper->next) {
+            print $client->{'f'}->{'name'}
+     }
+
+    The optional arguments allow you filter down what is returned.
+
+  Options
+
+    Note that if any of these options are tainted then there will be a fatal
+    error. The only exception is the list of bindings, which may be tainted.
+
+  fields, where, bindings, order
+
+    These options are passed to "select_multiple", which is implemented in
+    the database format level. "fields", "bindings", and "order" are first
+    checked to ensure that they are array refs. If they are scalars then
+    they are converted to refs to single element arrays.
+
+  children(%options)
+
+    This method returns a looper referencing child records in a foreign
+    table. The only required argument is "$class", which is the name of the
+    class of the foreign table. For example, the following code returns a
+    "DBIx::Record::Looper" for the members of a club:
+
+     $looper = $club->children('MyApp::Club');
+
+    This method accepts the same options as "get_records": "fields",
+    "where", "bindings", and "order". The where clause created by the
+    "where" option is set in addition to the primary of the current record.
+
+  get_login()
+
+    Returns the login held in the "login" property. If the object's
+    "is_own_logon" is true, then the object itself is returned.
+
+  get_dbh()
+
+    Returns the database handle used by the object.
+
+  validate()
+
+    Validates the record. Returns true if the record passes valdation, false
+    otherwise. If there are any errors,they will be in
+    "@DBIx::Record::errors".
+
+    Calls "validate_fields()", holding on to the returned array of errors.
+    If no errors are found, or if "always_rl_validate()" returns true, the
+    process then calls "record_level_validate()", holding on to those
+    errors.
+
+    Before any valdation is done, the "still_valid" method is called. If it
+    returns true, then the record has not been changed since it was
+    retrieved from the database, or since it was last confirmed as valid, so
+    no validation is needed and "validate" returns true.
+
+    If errors are found, "validate" returns false. "@DBIx::Record::errors"
+    contains an array of errors.
+
+  validate_fields()
+
+    Loops through all changed fields and runs their "validate" methods. If
+    any of the validations return false, then this method returns false.
+    Otherwise it returns true.
+
+  still_valid()
+
+    Returns true if the record has been validated before and the record has
+    not changed since that validation.
+
+  changed()
+
+    Returns an array of the names of fields that have changed since the
+    record object was created or since the last save. For a new record, all
+    fields are noted as "changed" when the object is created.
+
+    This method actually just calls the "changed()" method of the
+    "DBIx::Record::FieldHash" object.
+
+  reset()
+
+    Sets the record so that no fields are marked as changed. The values of
+    the fields are *not* changed back to their original values.
+
+    This method actually just calls the "reset()" method of the
+    "DBIx::Record::FieldHash" object.
+
+  static display_record()
+
+    Returns a single record with just the fields listed in display_fields.
+
+  static display_record()
+
+    Returns a looper object just like get_records, but with the display
+    fields specifically requested.
+
+  static display_record()
+
+    Returns the output of the "display_str" method of the record with the
+    given pk.
+
+  static crunch()
+
+    Trims leading and trailing space, crunches internal contiguous
+    whitespace to single spaces. In void context, modifies the input param
+    itself. Otherwise crunches and returns the modified value.
+
+  static tc()
+
+    Sets the given string title case: the beginning strings are in
+    uppercase, everything else is lowwer case. In void context, modifies the
+    input param itself. Otherwise crunches and returns the modified value.
+
+  static crunch()
+
+    Escapes the given string for display in a web page. In void context,
+    modifies the input param itself. Otherwise crunches and returns the
+    modified value.
+
+  static hascontent()
+
+    Returns true if the given scalar is defined and contains something
+    besides whitespace.
+
+  static strip_html()
+
+    Removes all HTML tags from the given string.
+
+  static create_login()
+
+    This method sets "$login" to either a DBIx::Record::Login object, or a
+    DBI database handle. This method returns true/false indicating success.
+    This method is the most loosely defined in "DBIx::Record" That is
+    because every application will have a different way of creating login
+    objects and connecting to the database.
+
+  record_level_validate()
+
+    Override this method in the table layer.
+
+    This method is called by "validate()" to allow the designer to perform
+    custom validation beyond that which is performed at the field level.
+    This method returns true/false indicating success. The default is to
+    return true. This method should *not* be used to check field-level
+    business rules such as "required". Those checks are done by the
+    individual field objects and are all called by "validate_fields", which
+    is also called by "save".
+
+    Designers of extensions of this subroutine should be sensitive to the
+    fact that not all of the fields for a given record may be loaded into
+    the object. Therefore, checks on relationships between several fields
+    may not be necessary if not all of those fields are loaded.
+
+  always_rl_validate()
+
+    Override this method in the table layer.
+
+    If this method returns true, then when "validate()" calls
+    "validate_fields()" and it gets errors, it *still* calls
+    "record_level_validate()". Defaults to false.
+
+  static table_name(), static pk_field_name()
+
+    These methods provide simple information about a specific table.
+    "table_name" returns the name of the table. "pk_field_name" returns the
+    name of the primary key field.
+
+    These methods simply return a string. They require no arguments and can
+    be called as either static or object methods. Generally each can be
+    implemented in a single line of code:
+
+     sub table_name       {'COUNTRY'}
+     sub key_field_name   {'COUNTRY_ID'}
+
+  display_str(), static display_fields()
+
+    "display_str" outputs a string that is used to indicate this record.
+    Usually this method is used in lists of records. For example, in a table
+    holding country names, this method would return the name of the country
+    (e.g. "England", "Canada"). In a list of people, this record could
+    return the list of people's names.
+
+    "display_str" returns an array ref of fields that are used by
+    "display_str".
+
+  before_create(), after_create(), before_update(), after_update(), before_delete(), after_delete
+
+    These methods are called before and after the creation, update, and
+    deletion of a record. If any of "before" events return false then the
+    event is cancelled. By default all of these simply return true.
+
+  static static field_defs()
+
+    This method returns a hash of field definitions. Each field definition
+    is itself a hash of properties for that field. These definitions are
+    used to create the fields in the "f" property of "DBIx::Record::Field"
+    objects.
+
+    Each key in the hash is the name of the field. Field names should always
+    be lowercase. The value consists of a hash of field properties. The only
+    required property is the name of the class of the field. Other
+    properties are passed to the "field object" constructor and will
+    generally be used to set properties of that field object.
+
+    The "default" property is used to set the default value of the field.
+    That value is passed to the field object constructor via its
+    "set_from_interface" method.
+
+    "field_defs" determines the definitions in any way the programmer
+    chooses, but generally it's easiest to simply create and return the hash
+    directly in the sub, like this:
+
+     sub field_defs {
+            return 
+                    name => {
+                            class    =>    'DBIx::Record::Text',
+                            required =>    1,
+                            display_size   =>  25,
+                            maxsize  =>    50,
+                            },
+                    email => {
+                            class    =>  'DBIx::Record::Text',
+                            rows     =>  5,
+                            cols     =>  70,
+                            maxsize  =>  '1k',
+                            },
+                    comments => {
+                            class    =>  'DBIx::Record::TextArea',
+                            },
+                    ;
+     }
+
+  static record_delete($dbh, $pk)
+
+    Deletes the record in the given table with the given primary key. This
+    method returns true/false indicating success. Implement this method in
+    the database format layer.
+
+  static select_single($dbh, $pk, %options)
+
+    Retrieves the record's data from the database, returning a hash of the
+    fields and data. By default, all the fields are retrieved and returned.
+    If the "fields" option is sent, then only the fields listed there should
+    be retrieved.
+
+  static select_multiple($dbh, %options)
+
+    This static function is implemented in the database format layer.
+    "select_multiple" selects a set of records from the class' table,
+    returning a DBI statement handle of that selection. The statement handle
+    should *not* be executed.
+
+    In its simplest form, "select_multiple" selects all fields in all
+    records in the entire table:
+
+     $sth = MyApp::Clients->select_multiple($dbh);
+
+    The optional arguments filter down the results:
+
+    fields
+        "fields" is an array of the names of fields to retrieve. The default
+        is "*", which may also be sent explicitly. So, for example, this
+        code retrieves the "name" and "email" fields:
+
+         $sth = MyApp::Clients->select_multiple($dbh, fields=>['name', 'email']);
+
+        Regardless of what fields are listed in this argument,
+        "select_multiple" should always return the primary key in the return
+        hash.
+
+    order
+        This option is an array of fields on which the select should be
+        ordered. For example, the following code sets the order to "age"
+        then "name":
+
+         $sth = MyApp::Clients->select_multiple(
+                fields => ['name', 'email'],
+                order => ['age', 'name']);
+
+    where_str
+        This option is a where clause to add to the select. For example, the
+        following code sets the where clause to people under 21:
+
+         $sth = MyApp::Clients->select_multiple(
+                fields => ['name', 'email'],
+                where_str  => 'age < 21');
+
+    bindings
+        This option is only used when there is also a "where" option. This
+        option is an array of values associated with the bound params in the
+        where clause. So, for example, this code binds 21 to the first param
+        and 'm' to the second:
+
+         $sth = MyApp::Clients->select_multiple(
+                fields    => ['name', 'email'],
+                where     => 'age < ? and gender=?',
+                bindings  => [21, 'm']
+                );
+
+  static select_exists($dbh, $pk)
+
+    Returns true if a record with the given primary key exists in the given
+    table.
+
+  static update($dbh, $pk, %fields)
+
+    This static function is implemented in the database format layer. This
+    method saves the fields in the "%fields" to a specific existing record.
+    The hash will always contain at least one name/value pair, and the
+    function can assume that the record already exists. This method returns
+    true/false indicating success.
+
+  static insert($dbh, $pk, %fields)
+
+    This method creates a new record in the table and returns the primary
+    key of that new record. "%fields" ius a hash of field names and values
+    for the new record. The hash may have any number of name/value pairs,
+    including none. This method returns true/false indicating success.
+
+  interface DBIx::Record::Login
+
+    A "DBIx::Record::Login" object represents the connection to the
+    database. "DBIx::Record::Login" is an interface class: it is not
+    provided by "DBIx::Record". Each application must provide its own class
+    that implements the "DBIx::Record::Login" interface. Alternatively, the
+    application can pass around a DBI database handle object and never
+    implement a "DBIx::Record::Login" class.
+
+  get_dbh
+
+    Returns an active database handle.
+
+  DBIx::Record::FieldHash
+
+    This is the tied hash class that is used to create the tied hash for the
+    "f" property of the record object.
+
+  id, login, class
+
+    The id, login, and class of the parent record object. Because of Perl's
+    difficulty in garbage collecting circular references, we don't store a
+    direct reference to the parent record object. Instead, we hold on to the
+    info we would need in case we need to retrieve any other fields.
+
+  fields
+
+    Hash of field objects.
+
+  changed_fields
+
+    This property indicates which fields have been changed since the record
+    object was created. When the "save" method is called, if no fields have
+    been changed, then no save is done. If any fields have changed, only
+    those fields that have changed are stored back into the database.
+    "changed_fields" consists of a hash whose keys are the changed field
+    names. The values of the hash are not important.
+
+  changed()
+
+    Returns an array of the names of fields that have changed since the
+    record object was created or since the last save. For a new record, all
+    fields are noted as "changed" when the object is created.
+
+  reset()
+
+    Sets the record so that no fields are marked as changed. The values of
+    the fields are *not* changed back to their original values.
+
+  TIEHASH($class, $record)
+
+    Instantiates the object, stores the record's id, login, and class
+    properties in itself. Creates the "fields" hash.
+
+  FETCH($key)
+
+    Returns the given key from the "fields" hash. If the field doesn't exist
+    then the value is loaded from the database, stored in the "fields" hash,
+    and returned.
+
+  STORE($key, $val)
+
+    If the given val is a "DBIx::Record::Field" object (or any class that
+    extends "DBIx::Record::Field"), then that object is stored directly in
+    the "fields" hash, and the field name is stored in "changed_fields". If
+    the "fields" hash already contains a "DBIx::Record::Field" object with
+    that key, then the value is passed to the object using its
+    "set_from_interface" method.
+
+    If the field doesn't exist in the "fields" hash, then the class's
+    "field_defs" method is called, and a definition for that field name is
+    sought. If the definition is found, then the field object is added to
+    the hash and the value stored in it as before.
+
+    If the field doesn't exist in the field definitions, then a fatal error
+    occurs.
+
+  DELETE
+
+    This one's a little weird. You don't delete fields from a database. In
+    this situation it makes sense to say that delete means "remove from the
+    cache, don't save any value".
+
+  EXISTS
+
+    Returns true if the given field exists in the "fields" hash.
+
+  FIRSTKEY, NEXTKEY
+
+    Used to cycle through the "fields" hash in the normal tied hash manner.
+
+DBIx::Record::Looper
+    A looper object is used to iterate through the results of a select
+    statement. Each call to "next" returns a "DBIx::Record" object of the
+    class that created the looper. So, for example, this code selects all
+    clients and returns their information one at a time:
+
+     $looper = MyApp::Client->get_records();
+ 
+     while (my $client = $looper->next) {
+            ...
+     }
+
+    Looper objects are lazy... they do not actually connect to the database
+    until the first "next" method is called. After the last record is
+    returned, they close the statement handle.
+
+  sth
+
+    The statement handle being held for looping through.
+
+  class
+
+    The name of the class of the returned record objects.
+
+  executed
+
+    If false, then the statement handle has not been executed yet.
+
+  static new($class, $sth)
+
+    This method is the constructor. This method creates the looper object
+    and stores the class name and the statement handle that are passed as
+    the arguments.
+
+  next
+
+    This method instantiates and returns a single record object representing
+    the next record in the statement handle.
+
+    If the "executed" property is false, then this is the first time that
+    "next" has been called. The statement handle is executed and "executed"
+    is set to true.
+
+    If the statement handle returns undef, then the handle is done and is
+    undeffed.
+
+  DBIx::Record::Error
+
+    "DBIx::Record::Error" objects represent a single error message returned
+    by a function. The object oriented format of the error messages allow
+    function to return messages that take advantage of HTML while still
+    restricting themselves to plain text when necessary.
+
+  text
+
+    The plain text of the error message.
+
+  html
+
+    The HTML version of the error message.
+
+  static new(%options)
+
+    Instantiates an error object. The optional arguments must have either
+    "html" or "text". If neither is sent then a fatal error occurs. The
+    options are stored in the "html" or "text" properties as appropriate.
+
+  static add(%options)
+
+    This static method works just like "new()", except that instead of
+    returning the error object, it adds the object to the
+    "@DBIx::Record::errors" array.
+
+  output($media)
+
+    Returns the error message for the given media.
+
+    $media should be "DBIx::Record::MEDIA_TEXT", "DBIx::Record::MEDIA_HTML",
+    or "DBIx::Record::MEDIA_HTML_FORM".
+
+    If the object's "text" property is defined, but "html" is not, and if
+    the media indicates HTML, then the "text" property is HTML escaped and
+    output. If text is called for and there is only HTML, then all HTML is
+    stripped (though for the time being probably not very well for this
+    first release) and returned. If there is neither, then a fatal error
+    occurs.
+
+abstract DBIx::Record::Field
+    "DBIx::Record::Field" represents a single field in a record. A
+    "DBIx::Record::Field" knows how to dislay itself in three different
+    medias, can deserialize itself from two types of data sources, and knows
+    how to format itself for saving in the database. "DBIx::Record::Field"
+    allows the application designer to define once how a field is displayed
+    and stored, and then use that definition in many different places.
+
+    "DBIx::Record::Field" is an abstract class. It is extended by several
+    different classes to implement different types of fields.
+    "DBIx::Record::Field" objects stringify to the results of the "output()"
+    method. By doing so, fields can be easily output in Perl "here"
+    documents.
+
+  field_name
+
+    The name of the field that is stored in the database.
+
+  value
+
+    This property holds the value of the field. Strictly speaking, the type
+    of data (scalar, array reference, hash reference) that is stored in this
+    property is up to each extending field class. Calculated fields may not
+    even use this property. However, default values will be stored in this
+    property, and extending classes should customarily store data here.
+
+  required
+
+    Indicates if the field is required. Generally it implies that the value
+    may not be an empty string, and must contain something besides
+    whitespace. However, extending classes may interpret this property
+    however they want.
+
+  desc_short
+
+    A short description of the field, what many people might call the "name"
+    of the field. This will often be different than the id. For example, a
+    field might have a field with an id of "phone" but a "desc_short" of
+    "Phone number".
+
+  desc_long_text
+
+    A long text description of the field. This field may be of any length,
+    but 100 characters is the upper limit of good taste. This field may be
+    left undefined, in which it is simply not output.
+
+  desc_long_html
+
+    The HTML version of "desc_long_text". If this property is not defined,
+    then "desc_long_text" is HTML escaped and output to the web page.
+
+  media
+
+    This property indicates how the field data should be displayed. There
+    will be three possible values, set as constants in the "DBIx::Record"
+    namespace:
+
+    TEXT: the data should be output as plain text
+    HTML: the data should be output for display in a web page
+    HTML_FORM_FIELD: the data should be output as a form field
+  media_object
+
+    If this property is set, the object it references is used to determine
+    the display media rather than the "media" property itself. The object
+    must implement the "get_media" method.
+
+  stringification
+
+    Field objects stringify to the output of their "output"methods.
+    Therefore, the two following commands function identically:
+
+      print $myfield->output;
+      print $myfield;
+
+  static new($definition, $login)
+
+    "new" is the constructor for field objects. "new" takes two arguments.
+    "$definition" is the field definition as returned by the table layer's
+    "field_defs" method. "$login" is the login object used to communicate
+    with the database.
+
+  output(%options)
+
+    Returns the results of either "text_display()", "html_display()", or
+    "html_form_field()", depending on the media type. This method is used by
+    the stringification class property to display the field according to the
+    proper media.
+
+  html_display_row()
+
+    Returns an entire row of an HTML table for displaying the name,
+    description, and value of a form field. Typically, the first column will
+    contain the "shortdesc" of the field and the "longdeschtml" (if it
+    exists) below that. The second column will contain the form field or the
+    html value. In no cases should this method return more than two HTML
+    table columns.
+
+  abstractish set_from_interface($value)
+
+    Sets the value based on the value received from the user interface.
+
+  abstract set_from_db()
+
+    Sets the value of the field based on the value returned from the
+    database. By default this method is just calls "set_from_interface".
+
+  abstractish send_to_db()
+
+    Returns the value that should be stored in the database. By default this
+    method just calls "text_display".
+
+  abstractish validate($rec)
+
+    Checks if the data in the field violates any business rules for the
+    field. This method returns true/false indicating success. The default
+    base implementation of this method always returns true. The first
+    argument is the "DBIx::Record" object, which may be used to do external
+    checks on the field data.
+
+  abstract text_display()
+
+    Returns the value that should be displayed exactly as-is in a text-based
+    interface. By default this method simply returns the value of the
+    "value" property.
+
+  abstractish html_display()
+
+    Returns the value that should be displayed (not as a form field) in a
+    web page. Text-fields, for example, will simply return the text with the
+    HTML escaped. In "DBIx::Record::Field", this method simply returns the
+    HTML escaped value of the "value" property.
+
+  abstract html_form_field()
+
+    Returns the HTML to display the field in an HTML form. The code should
+    default the field to its current value.
+
+  DBIx::Record::Field::Text *extends "DBIx::Record::Field"*
+
+    This class represents a short text field. Examples of data that would
+    use "DBIx::Record::Field::Text" would be people's names.
+
+  crunch
+
+    Indicates that the data should have leading and trailing whitespace
+    removed, and internal whitespace crunched down to single spaces.
+
+  display_size
+
+    Indicates how many characters wide the text field should be in form
+    editing.
+
+  max_size
+
+    Indicates that the maximum number of characters the text may be. 0 or
+    undef indicate no maximum size. 'k' may be appended to the value to
+    indicate that the size is in kilobytes, or 'm' to indicate that the
+    value is in meg. For example, '3k' would indicate that the string may be
+    3 kilobytes long.
+
+  upper, lower, title
+
+    If any of these properties are true, then the data is uppercased,
+    lowercased, or title-cased when it is imported from the user interface.
+
+  html_form_field()
+
+    Returns the HTML code for an "<INPUT>" element. The size of the field is
+    set to the "size" property.
+
+  set_from_interface()
+
+    Overrides "DBIx::Record::Field"'s "set_from_interface" to implement the
+    "upper", "lower", and "title" properties.
+
+  validate($rec)
+
+    Performs a large set of validation checks. If the field is required, the
+    value must consist of something besides whitespace. If there is a
+    maxsize, that is checked. If the record is a "static foreign_key()",
+    then the foreign key is checked using record_exists($id).
+
+  DBIx::Record::Field::TextArea *extends "DBIx::Record::Field::Text"*
+
+    "DBIx::Record::Field::TextArea" objects are just like
+    "DBIx::Record::Field::Text" objects except that they provide a much
+    larger editing area for the user interface.
+    "DBIx::Record::Field::TextArea" are for large blocks of text such as
+    "description" fields.
+
+  rows, cols
+
+    Indicates the number of rows and columns to use for the text editing
+    box.
+
+  DBIx::Record::Field::ForeignKey
+
+    *extends "DBIx::Record::Field"*
+
+    A field that is a foreign key to another table.
+
+  foreign
+
+    The class name of the foreign table.
+
+  locked
+
+    If this field does not allow the user to change the value of the field.
+
+  record($login)
+
+    Returns the record that this field references. Return undef if "value"
+    if undef.
+
+  validate($rec)
+
+    Uses the given record object to check if a record of the given class
+    exists with the primary key stored in "value".
+
+  DBIx::Record::Field::Checkbox *extends "DBIx::Record::Field"*
+
+    A field object of this class holds a true/false value. It is represented
+    in the user interface with a checkbox.
+
+  value
+
+    This property consists only of 1 or 0.
+
+  true_false_reps
+
+    This property contains the strings that indicate true or false. The
+    property consists of an "LCHash" in which each key is a string that
+    might be used to represent true or false. The value of each hash element
+    is 1 or 0. When data is input into the field using the
+    "set_from_interface" method, if the input value is defined and matches
+    (on a crunched, case-insensitive basis) any of the keys in the hash,
+    then the value of that hash element is stored. If the value does not
+    exist in the hash, then the value is stored based on its standard Perl
+    truth or falseness.
+
+    This property defaults to these keys and values:
+
+     {
+            1      =>  1,
+            0      =>  0,
+            y      =>  1,
+            n      =>  0,
+            yes    =>  1,
+            no     =>  0,
+            t      =>  1,
+            f      =>  0,
+            true   =>  1,
+            false  =>  0,
+     }
+
+  output_db
+
+    This property holds the strings that are output to the database to
+    indicate true and false. The property consists of a hash with keys 1 and
+    0. The default value of this property is this hash:
+
+     {
+            1  =>  1,
+            0  =>  0,
+     }
+
+  output_interface
+
+    This property holds the strings that are output to the user interface to
+    indicate true and false. The property consists of a hash with keys 1 and
+    0. The default value of this property is this hash:
+
+     {
+            1  =>  1,
+            0  =>  0,
+     }
+
+  html_img
+
+    If this property is set, then when the data is represented in HTML, but
+    not in a form, the images defined in this property are displayed to
+    indicate true or false. This property can be used to present images of
+    checkboxes that look like the checkboxes in a form, but are not
+    editable.
+
+    This property should consist of an anon hash with two elements. The keys
+    for the hash are 1 and 0. The value of each element is a hash consisting
+    of the properties of the image. The properties of the image are "url",
+    "height", "width". An example of this property might consist of this
+    hash:
+
+     {
+            1  => {
+                    url    => '/images/yes.gif',
+                    height => 15,
+                    width  => 15,
+                    },
+        
+            0  => {
+                    url    => '/images/no.gif',
+                    height => 15,
+                    width  => 15,
+                    },
+     }
+
+  set_from_interface($val)
+
+    This method sets the value of the field according to this algorithm:
+
+    * If $val is defined
+        * crunch and lowercase $val
+        * if $val exists as a key in "true_false_reps"
+            * Set "value" to the Perl truth or falseness of the hash value.
+        * else
+            * set "value" $val.
+    * else
+        * set "value" to 0
+  DBIx::Record::Field::Select *extends "DBIx::Record::Field"*
+
+    Objects in this class have a defined, finite set of available options.
+    The user interface for this type of field is a dropdown selection in
+    which the user may select exactly one value.
+
+  options
+
+    This property consists of an array of values and value displays. The
+    values and displays alternate: a value, then a display, then another
+    value, then its display, etc.
+
+  foreign
+
+    If this property is set, it gives the class name of a table. This
+    property indicates that the value of the field is a foreign key to the
+    given table. The primary keys and display values are retrieved from the
+    class using its "display_options" and "display_str" methods.
+
+  html_form_field()
+
+    Returns HTML for a "<SELECT>" field.
+
+  validate($rec)
+
+    Checks that the value is one of the defined set of acceptable values.
+
+  DBIx::Record::Field::Radio
+
+    *extends "DBIx::Record::Select"*
+
+    Works just like "DBIx::Record::Select" except that it outputs radio
+    buttons instead of a select box.
+
+  html_form_field()
+
+    Returns HTML for a set of radio buttons.
+
+TERMS AND CONDITIONS
+    Copyright (c) 2002 by Miko O'Sullivan. All rights reserved. This program
+    is free software; you can redistribute it and/or modify it under the
+    same terms as Perl itself. This software comes with NO WARRANTY of any
+    kind.
+
+AUTHOR
+    Miko O'Sullivan miko@idocs.com
+
+VERSION
+    Version 0.90 November 13, 2002
+        Initial release
+
